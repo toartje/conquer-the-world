@@ -129,6 +129,8 @@ function normalizeMinion(m: Minion): Minion {
 // Give every saved minion exactly one place. Overflow from older saves waits at a checkpoint.
 export function normalizeGame(previous: GameState, now = Date.now()): GameState {
   const game = structuredClone(previous), valid = new Set(game.minions.map(m => m.id)), used = new Set<string>();
+  // Remove the short-lived fixed West Flanders prototype from saved games.
+  game.checkpoints = game.checkpoints.filter(cp => !cp.id.startsWith('wf-'));
   game.position = clampWorldPosition(game.position);
   game.player.lastMinionAt ??= now;
   game.player.lastSeenAt ??= now;

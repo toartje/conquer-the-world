@@ -6,7 +6,7 @@ import { simulateBattle } from '../game/battle';
 import { advanceTime, buildCamp, buyCampWorker, campStats, captureCheckpoint, checkpointCapacity, claimCheckpoint, minionPower, movePlayer, newGame, normalizeGame, playerLevel, recallMinion, recruitMinion, recruitPreview, setSquad, startTraining, stationMinion, summonOptions, upgradeCheckpoint, xpForNext, canBuildCamp } from '../game/engine';
 import { distanceMeters, offsetCells } from '../game/geo';
 import { gameStorage } from '../game/storage';
-import type { BattleResult, Camp, GameState, Minion, Position } from '../game/types';
+import type { BattleResult, Camp, Checkpoint, GameState, Minion, Position } from '../game/types';
 
 type Tab = 'MAP' | 'SQUAD' | 'MINIONS' | 'TERRITORY' | 'PROFILE';
 type BattleView = { cpId: string; result: BattleResult; visible: number; settled: boolean; xpGained: number; tokensGained: number; territoryGained: number };
@@ -39,6 +39,17 @@ export function App() {
   }, []);
 
   const move = useCallback((p: Position) => setGame(g => movePlayer(g, p, 'simulation')), []);
+  const mergeWorldCheckpoints = useCallback((incoming: Checkpoint[]) => setGame(game => {
+    const incomingIds = new Set(incoming.map(cp => cp.id));
+    const incomingById = new Map(incoming.map(cp => [cp.id, cp]));
+    const current = new Set(game.checkpoints.map(cp => cp.id));
+    const checkpoints = game.checkpoints
+      .filter(cp => !cp.id.startsWith('pop-') || cp.owner === 'player' || incomingIds.has(cp.id))
+      .map(cp => cp.id.startsWith('pop-') && cp.owner === null ? (incomingById.get(cp.id) ?? cp) : cp);
+    for (const checkpoint of incoming) if (!current.has(checkpoint.id)) checkpoints.push(checkpoint);
+    if (checkpoints.length === game.checkpoints.length && checkpoints.every((cp, index) => cp === game.checkpoints[index])) return game;
+    return { ...game, checkpoints };
+  }), []);
   const step = useCallback((dx: number, dy: number) => setGame(g => movePlayer(g, offsetCells(g.position, dx * CONFIG.simulationStepCells, dy * CONFIG.simulationStepCells), 'simulation')), []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -135,7 +146,7 @@ export function App() {
   return <div className="app-shell">
     <header className="top-bar"><div className="brand-mark">◈</div><div className="brand"><strong>CONQUER</strong><span>THE WORLD</span></div><div className="top-stats"><div><small>LVL</small><b>{level}</b></div><div><small>XP</small><b>{game.player.xp}/{xpForNext(level)}</b></div><div><small>CTW</small><b className="gold">{game.player.tokens}</b></div><div><small>CELLS</small><b>{owned}</b></div></div></header>
     <main className="main-stage">
-      <GameMap game={game} onCheckpoint={selectCheckpoint} onMove={move} onBoss={openBoss} />
+      <GameMap game={game} onCheckpoint={selectCheckpoint} onMove={move} onBoss={openBoss} onWorldCheckpoints={mergeWorldCheckpoints} />
       {tab === 'MAP' ? <>
         <div className="map-heading"><span className="eyebrow">LIVE WORLD</span><strong>{game.mode === 'simulation' ? 'Explore the city' : 'Walk to discover'}</strong><small>{discovered} cells discovered · {(game.player.distance / 1000).toFixed(2)} km walked</small></div>
         <div className="map-tools"><button className={game.mode === 'simulation' ? 'active' : ''} onClick={startSimulation}>⌁ <span>SIM</span></button><button className={game.mode === 'gps' ? 'active' : ''} onClick={startGps}>◉ <span>GPS</span></button></div>

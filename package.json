@@ -13,6 +13,7 @@
   "dependencies": {
     "@maplibre/maplibre-gl-leaflet": "^0.1.4",
     "leaflet": "^1.9.4",
+    "lerc": "^4.0.4",
     "maplibre-gl": "^6.11.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
