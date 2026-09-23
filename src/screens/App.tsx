@@ -43,11 +43,24 @@ export function App() {
     const incomingIds = new Set(incoming.map(cp => cp.id));
     const incomingById = new Map(incoming.map(cp => [cp.id, cp]));
     const current = new Set(game.checkpoints.map(cp => cp.id));
-    const checkpoints = game.checkpoints
-      .filter(cp => !cp.id.startsWith('pop-') || cp.owner === 'player' || incomingIds.has(cp.id))
-      .map(cp => cp.id.startsWith('pop-') && cp.owner === null ? (incomingById.get(cp.id) ?? cp) : cp);
-    for (const checkpoint of incoming) if (!current.has(checkpoint.id)) checkpoints.push(checkpoint);
-    if (checkpoints.length === game.checkpoints.length && checkpoints.every((cp, index) => cp === game.checkpoints[index])) return game;
+    let changed = false;
+    const checkpoints: Checkpoint[] = [];
+    for (const checkpoint of game.checkpoints) {
+      if (checkpoint.id.startsWith('pop-') && checkpoint.owner !== 'player' && !incomingIds.has(checkpoint.id)) {
+        changed = true;
+        continue;
+      }
+      const fresh = incomingById.get(checkpoint.id);
+      if (fresh && checkpoint.owner === null && (checkpoint.name !== fresh.name || checkpoint.position.lat !== fresh.position.lat || checkpoint.position.lng !== fresh.position.lng)) {
+        checkpoints.push(fresh);
+        changed = true;
+      } else checkpoints.push(checkpoint);
+    }
+    for (const checkpoint of incoming) if (!current.has(checkpoint.id)) {
+      checkpoints.push(checkpoint);
+      changed = true;
+    }
+    if (!changed) return game;
     return { ...game, checkpoints };
   }), []);
   const step = useCallback((dx: number, dy: number) => setGame(g => movePlayer(g, offsetCells(g.position, dx * CONFIG.simulationStepCells, dy * CONFIG.simulationStepCells), 'simulation')), []);

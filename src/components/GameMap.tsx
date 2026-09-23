@@ -40,7 +40,7 @@ function campMarker(camp: Camp, placement: 'single' | 'left' | 'right') {
 
 export function GameMap({ game, onCheckpoint, onMove, onBoss, onWorldCheckpoints }: { game: GameState; onCheckpoint: (id: string) => void; onMove: (p: Position) => void; onBoss: () => void; onWorldCheckpoints: (checkpoints: Checkpoint[]) => void }) {
   const host = useRef<HTMLDivElement>(null), mapRef = useRef<L.Map | null>(null), canvasRef = useRef<HTMLCanvasElement | null>(null), markerLayer = useRef<L.LayerGroup | null>(null);
-  const gameRef = useRef(game), moveRef = useRef(onMove), populationRef = useRef(onWorldCheckpoints);
+  const gameRef = useRef(game), moveRef = useRef(onMove), populationRef = useRef(onWorldCheckpoints), lastPanPosition = useRef<Position | null>(null);
   const [populationStatus, setPopulationStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   gameRef.current = game; moveRef.current = onMove; populationRef.current = onWorldCheckpoints;
 
@@ -107,7 +107,11 @@ export function GameMap({ game, onCheckpoint, onMove, onBoss, onWorldCheckpoints
     for (const camp of game.camps) addCamp(camp, game.camps, group);
     const boss = offsetCells(CONFIG.start, 1, -11);
     L.marker(boss, { icon: markerHtml('♛', 'boss-pin', 'Ancient Titan'), zIndexOffset: 500 }).on('click', onBoss).addTo(group);
-    map.panTo(game.position, { animate: true, duration: .35 });
+    const last = lastPanPosition.current;
+    if (!last || last.lat !== game.position.lat || last.lng !== game.position.lng) {
+      lastPanPosition.current = game.position;
+      map.panTo(game.position, { animate: true, duration: .35 });
+    }
   }, [game, onCheckpoint, onBoss]);
 
   const showWorld = () => mapRef.current?.setView([7.5, 0], 2, { animate: true });
