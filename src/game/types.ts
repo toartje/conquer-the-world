@@ -1,0 +1,12 @@
+export type Position = { lat: number; lng: number };
+export type Owner = 'player' | 'ember' | 'violet' | null;
+export type MinionKind = 'archer' | 'knight' | 'soldier' | 'wizard' | 'hexer' | 'beast' | 'farmer' | 'trainer';
+export type MinionRole = 'combat' | 'worker';
+export type Minion = { id: string; kind?: MinionKind; role?: MinionRole; name: string; icon: string; rarity: string; level: number; hp: number; currentHp?: number; attack: number; defense: number; speed: number; hunger: number; xp: number };
+export type Cell = { id: string; x: number; y: number; ownerId: Owner; ownerColor: string | null; discovered: boolean; checkpointId?: string };
+export type Checkpoint = { id: string; name: string; position: Position; cellId: string; owner: Owner; level: number; hp: number; xp: number; defenders: (string | null)[]; waitingMinions: string[]; breached: boolean; recruitsUsed: number };
+export type CampType = 'farm' | 'training';
+export type Camp = { id: string; type: CampType; name: string; cellId: string; position: Position; workers: string[]; training: { minionId: string; startedAt: number; endsAt: number; completed?: boolean }[] };
+export type GameState = { player: { username: string; xp: number; tokens: number; distance: number; lastMinionAt: number; lastSeenAt: number }; position: Position; mode: 'simulation' | 'gps'; cells: Record<string, Cell>; minions: Minion[]; squad: (string | null)[]; checkpoints: Checkpoint[]; camps: Camp[]; events: string[] };
+export type BattleLine = { text: string; side: 'player' | 'enemy' | 'system' };
+export type BattleResult = { victory: boolean; lines: BattleLine[]; survivors: number; enemySurvivors: number };
