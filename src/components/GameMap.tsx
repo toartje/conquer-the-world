@@ -12,6 +12,9 @@ import { loadPopulationCheckpoints } from '../game/worldPopulation';
 
 setWorkerUrl(mapLibreWorkerUrl);
 
+const MIN_CHECKPOINT_ZOOM = 15;
+const MAX_POPULATION_MARKERS = 24;
+
 function playableBounds() {
   return L.latLngBounds(
     [CONFIG.worldBounds.south, CONFIG.worldBounds.west],
@@ -42,6 +45,7 @@ export function GameMap({ game, onCheckpoint, onMove, onBoss, onWorldCheckpoints
   const host = useRef<HTMLDivElement>(null), mapRef = useRef<L.Map | null>(null), canvasRef = useRef<HTMLCanvasElement | null>(null), markerLayer = useRef<L.LayerGroup | null>(null);
   const gameRef = useRef(game), moveRef = useRef(onMove), populationRef = useRef(onWorldCheckpoints), lastPanPosition = useRef<Position | null>(null);
   const [populationStatus, setPopulationStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [mapRevision, setMapRevision] = useState(0);
   gameRef.current = game; moveRef.current = onMove; populationRef.current = onWorldCheckpoints;
 
   useEffect(() => {
@@ -72,12 +76,10 @@ export function GameMap({ game, onCheckpoint, onMove, onBoss, onWorldCheckpoints
     const redraw = () => drawCells(map, canvas, gameRef.current);
     let loadSequence = 0;
     const loadPopulation = async () => {
-      if (map.getZoom() < 11) { setPopulationStatus('idle'); return; }
+      if (map.getZoom() < MIN_CHECKPOINT_ZOOM) { setPopulationStatus('idle'); return; }
       const sequence = ++loadSequence, bounds = map.getBounds();
-      // Keep a few kilometres around the screen ready so walking does not
-      // make checkpoints pop in only after they enter the viewport.
-      const latPadding = Math.max(0.035, (bounds.getNorth() - bounds.getSouth()) * 0.5);
-      const lngPadding = Math.max(0.055, (bounds.getEast() - bounds.getWest()) * 0.5);
+      const latPadding = Math.max(0.018, (bounds.getNorth() - bounds.getSouth()) * 0.35);
+      const lngPadding = Math.max(0.028, (bounds.getEast() - bounds.getWest()) * 0.35);
       setPopulationStatus('loading');
       try {
         const checkpoints = await loadPopulationCheckpoints({ south: bounds.getSouth() - latPadding, west: bounds.getWest() - lngPadding, north: bounds.getNorth() + latPadding, east: bounds.getEast() + lngPadding });
@@ -89,8 +91,11 @@ export function GameMap({ game, onCheckpoint, onMove, onBoss, onWorldCheckpoints
         if (sequence === loadSequence) setPopulationStatus('error');
       }
     };
+    const viewSettled = () => { setMapRevision(value => value + 1); void loadPopulation(); };
     map.on('move zoom resize', redraw);
-    map.on('moveend zoomend', loadPopulation);
+    // Leaflet also emits moveend after zooming. One listener prevents every
+    // zoom from decoding and rendering the same population tile twice.
+    map.on('moveend', viewSettled);
     map.on('click', e => { if (gameRef.current.mode === 'simulation') moveRef.current(e.latlng); });
     redraw(); loadPopulation();
     return () => { map.remove(); mapRef.current = null; canvasRef.current = null; markerLayer.current = null; };
@@ -103,16 +108,25 @@ export function GameMap({ game, onCheckpoint, onMove, onBoss, onWorldCheckpoints
     group.clearLayers();
     L.circle(game.position, { radius: CONFIG.cellMeters * 2.3, color: COLORS.player, weight: 1, fillColor: COLORS.player, fillOpacity: .07, interactive: false }).addTo(group);
     L.marker(game.position, { icon: playerMarker(), title: 'Jouw positie', zIndexOffset: 1000 }).addTo(group);
-    for (const cp of game.checkpoints) addCheckpoint(cp, group, onCheckpoint);
-    for (const camp of game.camps) addCamp(camp, game.camps, group);
+    const visibleBounds = map.getBounds();
+    if (map.getZoom() >= MIN_CHECKPOINT_ZOOM) {
+      const visible = game.checkpoints.filter(cp => visibleBounds.contains(cp.position));
+      const fixed = visible.filter(cp => !cp.id.startsWith('pop-'));
+      const population = visible.filter(cp => cp.id.startsWith('pop-'))
+        .sort((a, b) => map.distance(map.getCenter(), a.position) - map.distance(map.getCenter(), b.position))
+        .slice(0, MAX_POPULATION_MARKERS);
+      for (const cp of [...fixed, ...population]) addCheckpoint(cp, group, onCheckpoint);
+    }
+    const visibleCamps = game.camps.filter(camp => visibleBounds.contains(camp.position));
+    for (const camp of visibleCamps) addCamp(camp, visibleCamps, group);
     const boss = offsetCells(CONFIG.start, 1, -11);
-    L.marker(boss, { icon: markerHtml('♛', 'boss-pin', 'Ancient Titan'), zIndexOffset: 500 }).on('click', onBoss).addTo(group);
+    if (map.getZoom() >= MIN_CHECKPOINT_ZOOM && visibleBounds.contains(boss)) L.marker(boss, { icon: markerHtml('♛', 'boss-pin', 'Ancient Titan'), zIndexOffset: 500 }).on('click', onBoss).addTo(group);
     const last = lastPanPosition.current;
     if (!last || last.lat !== game.position.lat || last.lng !== game.position.lng) {
       lastPanPosition.current = game.position;
       map.panTo(game.position, { animate: true, duration: .35 });
     }
-  }, [game, onCheckpoint, onBoss]);
+  }, [game, onCheckpoint, onBoss, mapRevision]);
 
   const showWorld = () => mapRef.current?.setView([7.5, 0], 2, { animate: true });
   const showPlayer = () => mapRef.current?.setView(gameRef.current.position, 17, { animate: true });
