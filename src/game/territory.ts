@@ -5,51 +5,62 @@ import type { Cell, Checkpoint, GameState } from './types';
 type Point = { x: number; y: number };
 type Vertex = Point & { checkpoint: Checkpoint };
 
-function area(a: Point, b: Point, c: Point) {
-  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-}
-
-function insideTriangle(point: Point, a: Point, b: Point, c: Point) {
-  const first = area(a, b, point), second = area(b, c, point), third = area(c, a, point);
-  return !(first < -0.01 || second < -0.01 || third < -0.01) || !(first > 0.01 || second > 0.01 || third > 0.01);
-}
-
+function cross(origin: Point, a: Point, b: Point) { return (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x); }
 function near(a: Point, b: Point) { return Math.hypot(a.x - b.x, a.y - b.y) <= CONFIG.territoryLinkMeters; }
 
-function validTriangles(checkpoints: Checkpoint[]) {
-  const vertices: Vertex[] = checkpoints.map(checkpoint => ({ ...toMeters(checkpoint.position), checkpoint }));
-  const owned = vertices.filter(v => v.checkpoint.owner === 'player');
-  const unclaimed = vertices.filter(v => v.checkpoint.owner !== 'player');
-  const triangles: [Vertex, Vertex, Vertex][] = [];
-  for (let i = 0; i < owned.length - 2; i++) for (let j = i + 1; j < owned.length - 1; j++) for (let k = j + 1; k < owned.length; k++) {
-    const a = owned[i], b = owned[j], c = owned[k];
-    if (!near(a, b) || !near(b, c) || !near(c, a) || Math.abs(area(a, b, c)) < CONFIG.cellMeters ** 2) continue;
-    if (unclaimed.some(v => insideTriangle(v, a, b, c))) continue;
-    triangles.push([a, b, c]);
+export function connectedCheckpointGroups(checkpoints: Checkpoint[]) {
+  const owned = checkpoints.filter(cp => cp.owner === 'player'), vertices = new Map(owned.map(cp => [cp.id, { ...toMeters(cp.position), checkpoint: cp }]));
+  const unseen = new Set(owned.map(cp => cp.id)), groups: Checkpoint[][] = [];
+  while (unseen.size) {
+    const first = unseen.values().next().value as string, queue = [first], group: Checkpoint[] = [];
+    unseen.delete(first);
+    while (queue.length) {
+      const id = queue.pop()!, vertex = vertices.get(id)!;
+      group.push(vertex.checkpoint);
+      for (const otherId of [...unseen]) if (near(vertex, vertices.get(otherId)!)) { unseen.delete(otherId); queue.push(otherId); }
+    }
+    groups.push(group);
   }
-  return triangles;
+  return groups;
 }
 
-// Territory is the union of local triangles bounded by three owned checkpoints.
-// A neutral or enemy checkpoint inside a triangle blocks that entire triangle.
-// Fog discovery is deliberately left alone: walking reveals, checkpoints claim.
+function convexHull(checkpoints: Checkpoint[]): Vertex[] {
+  const points = checkpoints.map(checkpoint => ({ ...toMeters(checkpoint.position), checkpoint })).sort((a, b) => a.x - b.x || a.y - b.y);
+  if (points.length <= 2) return points;
+  const lower: Vertex[] = [], upper: Vertex[] = [];
+  for (const point of points) { while (lower.length >= 2 && cross(lower.at(-2)!, lower.at(-1)!, point) <= 0) lower.pop(); lower.push(point); }
+  for (let i = points.length - 1; i >= 0; i--) { const point = points[i]; while (upper.length >= 2 && cross(upper.at(-2)!, upper.at(-1)!, point) <= 0) upper.pop(); upper.push(point); }
+  lower.pop(); upper.pop(); return [...lower, ...upper];
+}
+
+function insidePolygon(point: Point, polygon: Point[]) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i], b = polygon[j];
+    if (Math.abs(cross(a, b, point)) < .01 && point.x >= Math.min(a.x, b.x) && point.x <= Math.max(a.x, b.x) && point.y >= Math.min(a.y, b.y) && point.y <= Math.max(a.y, b.y)) return true;
+    if ((a.y > point.y) !== (b.y > point.y) && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+export function territoryPolygons(checkpoints: Checkpoint[]) {
+  const unclaimed = checkpoints.filter(cp => cp.owner !== 'player').map(cp => ({ ...toMeters(cp.position), checkpoint: cp }));
+  return connectedCheckpointGroups(checkpoints).filter(group => group.length >= 3).map(group => convexHull(group)).filter(hull => hull.length >= 3 && !unclaimed.some(point => insidePolygon(point, hull)));
+}
+
+// Ownership is the source of truth. Every ownership change rebuilds connected
+// components and their hulls, so territories expand, shrink, split and merge.
 export function rebuildTerritory(game: GameState) {
   const previouslyOwned = new Set(Object.values(game.cells).filter(c => c.ownerId === 'player').map(c => c.id));
-  for (const cell of Object.values(game.cells)) if (cell.ownerId === 'player') {
-    cell.ownerId = null; cell.ownerColor = null;
-  }
-  const blockedCells = new Set(game.checkpoints.filter(cp => cp.owner !== 'player').map(cp => cp.cellId));
-  for (const [a, b, c] of validTriangles(game.checkpoints)) {
-    const minX = Math.floor(Math.min(a.x, b.x, c.x) / CONFIG.cellMeters);
-    const maxX = Math.floor(Math.max(a.x, b.x, c.x) / CONFIG.cellMeters);
-    const minY = Math.floor(Math.min(a.y, b.y, c.y) / CONFIG.cellMeters);
-    const maxY = Math.floor(Math.max(a.y, b.y, c.y) / CONFIG.cellMeters);
+  for (const cell of Object.values(game.cells)) if (cell.ownerId === 'player') { cell.ownerId = null; cell.ownerColor = null; }
+  for (const polygon of territoryPolygons(game.checkpoints)) {
+    const minX = Math.floor(Math.min(...polygon.map(point => point.x)) / CONFIG.cellMeters), maxX = Math.floor(Math.max(...polygon.map(point => point.x)) / CONFIG.cellMeters);
+    const minY = Math.floor(Math.min(...polygon.map(point => point.y)) / CONFIG.cellMeters), maxY = Math.floor(Math.max(...polygon.map(point => point.y)) / CONFIG.cellMeters);
     for (let x = minX; x <= maxX; x++) for (let y = minY; y <= maxY; y++) {
-      const id = cellId(x, y);
-      if (blockedCells.has(id) || !insideTriangle({ x: (x + .5) * CONFIG.cellMeters, y: (y + .5) * CONFIG.cellMeters }, a, b, c)) continue;
-      const cell: Cell = game.cells[id] ?? { id, x, y, ownerId: null, ownerColor: null, discovered: false };
-      cell.ownerId = 'player'; cell.ownerColor = COLORS.player;
-      game.cells[id] = cell;
+      const point = { x: (x + .5) * CONFIG.cellMeters, y: (y + .5) * CONFIG.cellMeters };
+      if (!insidePolygon(point, polygon)) continue;
+      const id = cellId(x, y), cell: Cell = game.cells[id] ?? { id, x, y, ownerId: null, ownerColor: null, discovered: false };
+      cell.ownerId = 'player'; cell.ownerColor = COLORS.player; game.cells[id] = cell;
     }
   }
   return Object.values(game.cells).filter(c => c.ownerId === 'player' && !previouslyOwned.has(c.id)).length;

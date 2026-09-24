@@ -8,12 +8,16 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { COLORS, CONFIG } from '../config';
 import { cellAt, cellCenter, cellCorners, cellId, offsetCells } from '../game/geo';
 import type { Camp, Checkpoint, GameState, Position } from '../game/types';
-import { loadPopulationCheckpoints } from '../game/worldPopulation';
+import { loadPopulationCheckpoints, zoneAt, zoneRequestKey, zonesForBounds } from '../game/worldPopulation';
 
 setWorkerUrl(mapLibreWorkerUrl);
 
 const MIN_CHECKPOINT_ZOOM = 15;
 const MAX_POPULATION_MARKERS = 24;
+
+function isPopulationCheckpoint(checkpoint: Checkpoint) {
+  return checkpoint.generationVersion !== undefined || checkpoint.zoneId !== undefined || checkpoint.id.startsWith('pop-');
+}
 
 function playableBounds() {
   return L.latLngBounds(
@@ -42,8 +46,8 @@ function campMarker(camp: Camp, placement: 'single' | 'left' | 'right') {
 }
 
 export function GameMap({ game, onCheckpoint, onMove, onBoss, onWorldCheckpoints }: { game: GameState; onCheckpoint: (id: string) => void; onMove: (p: Position) => void; onBoss: () => void; onWorldCheckpoints: (checkpoints: Checkpoint[]) => void }) {
-  const host = useRef<HTMLDivElement>(null), mapRef = useRef<L.Map | null>(null), canvasRef = useRef<HTMLCanvasElement | null>(null), markerLayer = useRef<L.LayerGroup | null>(null);
-  const gameRef = useRef(game), moveRef = useRef(onMove), populationRef = useRef(onWorldCheckpoints), lastPanPosition = useRef<Position | null>(null);
+  const host = useRef<HTMLDivElement>(null), mapRef = useRef<L.Map | null>(null), canvasRef = useRef<HTMLCanvasElement | null>(null), markerLayer = useRef<L.LayerGroup | null>(null), debugLayer = useRef<L.LayerGroup | null>(null);
+  const gameRef = useRef(game), moveRef = useRef(onMove), populationRef = useRef(onWorldCheckpoints), lastPanPosition = useRef<Position | null>(null), lastPopulationKey = useRef('');
   const [populationStatus, setPopulationStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [mapRevision, setMapRevision] = useState(0);
   gameRef.current = game; moveRef.current = onMove; populationRef.current = onWorldCheckpoints;
@@ -73,20 +77,34 @@ export function GameMap({ game, onCheckpoint, onMove, onBoss, onWorldCheckpoints
     canvas.className = 'territory-canvas'; canvas.style.pointerEvents = 'none';
     map.getPanes().overlayPane.appendChild(canvas); canvasRef.current = canvas;
     const markers = L.layerGroup().addTo(map); markerLayer.current = markers;
+    const debug = L.layerGroup().addTo(map); debugLayer.current = debug;
+    const showZoneDebug = import.meta.env.DEV && new URLSearchParams(location.search).has('debugZones');
     const redraw = () => drawCells(map, canvas, gameRef.current);
     let loadSequence = 0;
     const loadPopulation = async () => {
-      if (map.getZoom() < MIN_CHECKPOINT_ZOOM) { setPopulationStatus('idle'); return; }
+      if (map.getZoom() < MIN_CHECKPOINT_ZOOM) {
+        if (lastPopulationKey.current) { lastPopulationKey.current = ''; populationRef.current([]); }
+        debug.clearLayers(); setPopulationStatus('idle'); return;
+      }
       const sequence = ++loadSequence, bounds = map.getBounds();
       const latPadding = Math.max(0.018, (bounds.getNorth() - bounds.getSouth()) * 0.35);
       const lngPadding = Math.max(0.028, (bounds.getEast() - bounds.getWest()) * 0.35);
+      const requestBounds = { south: bounds.getSouth() - latPadding, west: bounds.getWest() - lngPadding, north: bounds.getNorth() + latPadding, east: bounds.getEast() + lngPadding };
+      const requestKey = zoneRequestKey(requestBounds, 1);
+      if (requestKey === lastPopulationKey.current) return;
+      lastPopulationKey.current = requestKey;
       setPopulationStatus('loading');
       try {
-        const checkpoints = await loadPopulationCheckpoints({ south: bounds.getSouth() - latPadding, west: bounds.getWest() - lngPadding, north: bounds.getNorth() + latPadding, east: bounds.getEast() + lngPadding });
+        const checkpoints = await loadPopulationCheckpoints(requestBounds, 1);
         if (sequence !== loadSequence) return;
         populationRef.current(checkpoints);
+        if (showZoneDebug) {
+          debug.clearLayers(); const active = zoneAt(gameRef.current.position).id;
+          for (const zone of zonesForBounds(requestBounds, 1)) L.rectangle([[zone.bounds.south, zone.bounds.west], [zone.bounds.north, zone.bounds.east]], { color: zone.id === active ? '#f4d56a' : '#58b9e8', weight: zone.id === active ? 2 : 1, fill: false, interactive: true }).bindTooltip(zone.id).addTo(debug);
+        }
         setPopulationStatus('ready');
       } catch (error) {
+        if (lastPopulationKey.current === requestKey) lastPopulationKey.current = '';
         console.error('Population checkpoints could not be loaded', error);
         if (sequence === loadSequence) setPopulationStatus('error');
       }
@@ -98,7 +116,7 @@ export function GameMap({ game, onCheckpoint, onMove, onBoss, onWorldCheckpoints
     map.on('moveend', viewSettled);
     map.on('click', e => { if (gameRef.current.mode === 'simulation') moveRef.current(e.latlng); });
     redraw(); loadPopulation();
-    return () => { map.remove(); mapRef.current = null; canvasRef.current = null; markerLayer.current = null; };
+    return () => { map.remove(); mapRef.current = null; canvasRef.current = null; markerLayer.current = null; debugLayer.current = null; };
   }, []);
 
   useEffect(() => {
@@ -111,8 +129,8 @@ export function GameMap({ game, onCheckpoint, onMove, onBoss, onWorldCheckpoints
     const visibleBounds = map.getBounds();
     if (map.getZoom() >= MIN_CHECKPOINT_ZOOM) {
       const visible = game.checkpoints.filter(cp => visibleBounds.contains(cp.position));
-      const fixed = visible.filter(cp => !cp.id.startsWith('pop-'));
-      const population = visible.filter(cp => cp.id.startsWith('pop-'))
+      const fixed = visible.filter(cp => !isPopulationCheckpoint(cp));
+      const population = visible.filter(isPopulationCheckpoint)
         .sort((a, b) => map.distance(map.getCenter(), a.position) - map.distance(map.getCenter(), b.position))
         .slice(0, MAX_POPULATION_MARKERS);
       for (const cp of [...fixed, ...population]) addCheckpoint(cp, group, onCheckpoint);
@@ -172,8 +190,9 @@ function styleWorldMap(map: MapLibreMap) {
 
 function addCheckpoint(cp: Checkpoint, group: L.LayerGroup, onCheckpoint: (id: string) => void) {
   const kind = cp.owner === 'player' ? 'friendly' : cp.owner === null ? 'neutral' : 'enemy';
-  const populationClass = cp.id.startsWith('pop-') ? ' population-pin' : '';
-  L.marker(cp.position, { icon: markerHtml(cp.owner === 'player' ? '◆' : cp.owner ? '⚑' : '◇', `${kind}-pin${populationClass}`, cp.name), zIndexOffset: cp.id.startsWith('pop-') ? 420 : 500 })
+  const procedural = isPopulationCheckpoint(cp);
+  const populationClass = procedural ? ' population-pin' : '';
+  L.marker(cp.position, { icon: markerHtml(cp.owner === 'player' ? '◆' : cp.owner ? '⚑' : '◇', `${kind}-pin${populationClass}`, cp.name), zIndexOffset: procedural ? 420 : 500 })
     .bindTooltip(cp.name, { direction: 'top', offset: [0, -20] }).on('click', () => onCheckpoint(cp.id)).addTo(group);
 }
 

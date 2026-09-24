@@ -12,6 +12,10 @@ type Tab = 'MAP' | 'SQUAD' | 'MINIONS' | 'TERRITORY' | 'PROFILE';
 type BattleView = { cpId: string; result: BattleResult; visible: number; settled: boolean; xpGained: number; tokensGained: number; territoryGained: number };
 const tabs: { label: Tab; icon: string }[] = [{ label: 'MAP', icon: '◎' }, { label: 'SQUAD', icon: '✥' }, { label: 'MINIONS', icon: '✦' }, { label: 'TERRITORY', icon: '▦' }, { label: 'PROFILE', icon: '◉' }];
 
+function isPopulationCheckpoint(checkpoint: Checkpoint) {
+  return checkpoint.generationVersion !== undefined || checkpoint.zoneId !== undefined || checkpoint.id.startsWith('pop-');
+}
+
 export function App() {
   const [game, setGame] = useState<GameState>(() => normalizeGame(gameStorage.load() ?? newGame()));
   const [tab, setTab] = useState<Tab>('MAP');
@@ -46,7 +50,7 @@ export function App() {
     let changed = false;
     const checkpoints: Checkpoint[] = [];
     for (const checkpoint of game.checkpoints) {
-      if (checkpoint.id.startsWith('pop-') && checkpoint.owner !== 'player' && !incomingIds.has(checkpoint.id)) {
+      if (isPopulationCheckpoint(checkpoint) && checkpoint.owner !== 'player' && !incomingIds.has(checkpoint.id)) {
         changed = true;
         continue;
       }
