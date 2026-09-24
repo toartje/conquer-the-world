@@ -9,15 +9,12 @@ import { COLORS, CONFIG } from '../config';
 import { cellAt, cellCenter, cellCorners, cellId, offsetCells } from '../game/geo';
 import type { Camp, Checkpoint, GameState, Position } from '../game/types';
 import { loadPopulationCheckpoints, zoneAt, zoneRequestKey, zonesForBounds } from '../game/worldPopulation';
+import { isPopulationCheckpoint } from '../game/worldCheckpoints';
 
 setWorkerUrl(mapLibreWorkerUrl);
 
 const MIN_CHECKPOINT_ZOOM = 15;
 const MAX_POPULATION_MARKERS = 24;
-
-function isPopulationCheckpoint(checkpoint: Checkpoint) {
-  return checkpoint.generationVersion !== undefined || checkpoint.zoneId !== undefined || checkpoint.id.startsWith('pop-');
-}
 
 function playableBounds() {
   return L.latLngBounds(

@@ -3,8 +3,9 @@ import { createServer } from 'vite';
 
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'error' });
 try {
-  const { newGame, movePlayer, normalizeGame } = await server.ssrLoadModule('/src/game/engine.ts');
+  const { newGame, movePlayer, normalizeGame, claimCheckpoint } = await server.ssrLoadModule('/src/game/engine.ts');
   const { rebuildTerritory, connectedCheckpointGroups } = await server.ssrLoadModule('/src/game/territory.ts');
+  const { mergeLoadedWorldCheckpoints } = await server.ssrLoadModule('/src/game/worldCheckpoints.ts');
   const { offsetCells, cellAt, cellId } = await server.ssrLoadModule('/src/game/geo.ts');
   const { CONFIG } = await server.ssrLoadModule('/src/config.ts');
 
@@ -29,6 +30,19 @@ try {
   rebuildTerritory(two);
   assert.equal(Object.values(two.cells).filter(c => c.ownerId === 'player').length, 0, 'two checkpoints do not claim land');
 
+  let claimFlow = structuredClone(two);
+  claimFlow.checkpoints.forEach(checkpoint => { checkpoint.owner = null; });
+  rebuildTerritory(claimFlow);
+  for (let index = 0; index < 3; index++) {
+    claimFlow.position = claimFlow.checkpoints[index].position;
+    claimFlow = claimCheckpoint(claimFlow, claimFlow.checkpoints[index].id);
+  }
+  const claimedThreeCount = Object.values(claimFlow.cells).filter(c => c.ownerId === 'player').length;
+  assert.ok(claimedThreeCount > 0, 'capturing the third connected checkpoint immediately creates territory');
+  claimFlow.position = claimFlow.checkpoints[3].position;
+  claimFlow = claimCheckpoint(claimFlow, claimFlow.checkpoints[3].id);
+  assert.ok(Object.values(claimFlow.cells).filter(c => c.ownerId === 'player').length > claimedThreeCount, 'capturing the fourth checkpoint immediately expands territory');
+
   const three = structuredClone(two);
   three.checkpoints[2].owner = 'player';
   rebuildTerritory(three);
@@ -44,13 +58,28 @@ try {
   const fifthPosition = offsetCells(CONFIG.start, 12, 3), fifthCell = cellAt(fifthPosition);
   five.checkpoints.push({ ...structuredClone(five.checkpoints[0]), id: 'fifth', owner: 'player', position: fifthPosition, cellId: cellId(fifthCell.x, fifthCell.y) });
   rebuildTerritory(five);
-  assert.ok(Object.values(five.cells).filter(c => c.ownerId === 'player').length > Object.values(four.cells).filter(c => c.ownerId === 'player').length, 'a fifth checkpoint connected through the graph expands the same territory');
+  const fiveCount = Object.values(five.cells).filter(c => c.ownerId === 'player').length;
+  assert.ok(fiveCount > Object.values(four.cells).filter(c => c.ownerId === 'player').length, 'a fifth checkpoint connected through the graph expands the same territory');
   assert.equal(connectedCheckpointGroups(five.checkpoints).filter(group => group.length >= 3).length, 1, 'five nearby checkpoints form one component');
+
+  const edgeLoss = structuredClone(five);
+  edgeLoss.checkpoints.find(cp => cp.id === 'fifth').owner = null;
+  rebuildTerritory(edgeLoss);
+  const edgeLossCount = Object.values(edgeLoss.cells).filter(c => c.ownerId === 'player').length;
+  assert.ok(edgeLossCount > 0 && edgeLossCount < fiveCount, 'losing an edge checkpoint immediately shrinks territory without removing the remaining component');
 
   const separated = structuredClone(five);
   const remote = [[40, 0], [46, 0], [43, 6]].map(([x, y], index) => { const position = offsetCells(CONFIG.start, x, y), cell = cellAt(position); return { ...structuredClone(five.checkpoints[0]), id: `remote-${index}`, owner: 'player', position, cellId: cellId(cell.x, cell.y) }; });
   separated.checkpoints.push(...remote); rebuildTerritory(separated);
   assert.equal(connectedCheckpointGroups(separated.checkpoints).filter(group => group.length >= 3).length, 2, 'a remote connected trio creates a separate territory');
+
+  const merged = structuredClone(separated);
+  for (const [index, [x, y]] of [[24, 3], [36, 3]].entries()) {
+    const position = offsetCells(CONFIG.start, x, y), cell = cellAt(position);
+    merged.checkpoints.push({ ...structuredClone(five.checkpoints[0]), id: `bridge-${index}`, owner: 'player', position, cellId: cellId(cell.x, cell.y) });
+  }
+  rebuildTerritory(merged);
+  assert.equal(connectedCheckpointGroups(merged.checkpoints).filter(group => group.length >= 3).length, 1, 'capturing bridge checkpoints merges two territories into one network');
 
   const split = structuredClone(fresh);
   split.checkpoints = Array.from({ length: 7 }, (_, index) => { const position = offsetCells(CONFIG.start, index * 12, index % 2 ? 3 : 0), cell = cellAt(position); return { ...structuredClone(fresh.checkpoints[0]), id: `chain-${index}`, owner: 'player', position, cellId: cellId(cell.x, cell.y) }; });
@@ -58,6 +87,29 @@ try {
   split.checkpoints[3].owner = null; rebuildTerritory(split);
   assert.deepEqual(connectedCheckpointGroups(split.checkpoints).map(group => group.length).sort(), [3, 3], 'losing a bridge splits the network into two valid territories');
   assert.ok(Object.values(split.cells).some(cell => cell.ownerId === 'player'), 'split components with three checkpoints keep territory');
+
+  const refreshSource = structuredClone(five);
+  const sentinelPosition = offsetCells(CONFIG.start, 100, 100), sentinelCell = cellAt(sentinelPosition);
+  refreshSource.checkpoints.push({ ...structuredClone(five.checkpoints[0]), id: 'kuurne-markt', owner: null, position: sentinelPosition, cellId: cellId(sentinelCell.x, sentinelCell.y) });
+  const refreshed = normalizeGame(JSON.parse(JSON.stringify(refreshSource)));
+  assert.equal(connectedCheckpointGroups(refreshed.checkpoints).find(group => group.some(cp => cp.id === 'fifth'))?.length, 5, 'refresh reconstructs the complete owned checkpoint network');
+  assert.equal(Object.values(refreshed.cells).filter(c => c.ownerId === 'player').length, fiveCount, 'refresh reconstructs the same territory from checkpoint ownership');
+
+  const zoned = structuredClone(five);
+  zoned.checkpoints.forEach((checkpoint, index) => { checkpoint.zoneId = index < 2 ? 'zone:a' : 'zone:b'; checkpoint.generationVersion = 2; });
+  const spare = { ...structuredClone(zoned.checkpoints[0]), id: 'cp-v2-spare', owner: null, zoneId: 'zone:a' };
+  zoned.checkpoints.push(spare);
+  const partialIncoming = zoned.checkpoints.slice(3, 5).map(checkpoint => ({ ...structuredClone(checkpoint), owner: null }));
+  const partial = mergeLoadedWorldCheckpoints(zoned, partialIncoming);
+  assert.equal(partial.checkpoints.filter(cp => cp.owner === 'player').length, 5, 'zone loading never removes owned checkpoints outside the visible marker set');
+  assert.equal(partial.checkpoints.some(cp => cp.id === spare.id), false, 'unloaded neutral procedural markers are pruned');
+  assert.equal(connectedCheckpointGroups(partial.checkpoints).filter(group => group.length >= 3).length, 1, 'zone borders do not split a connected ownership network');
+  assert.equal(Object.values(partial.cells).filter(c => c.ownerId === 'player').length, fiveCount, 'partial visibility does not alter persistent territory');
+
+  const serverPosition = offsetCells(CONFIG.start, 18, 0), serverCell = cellAt(serverPosition);
+  const serverOwned = { ...structuredClone(zoned.checkpoints[0]), id: 'cp-v2-server-owned', owner: 'player', zoneId: 'zone:c', position: serverPosition, cellId: cellId(serverCell.x, serverCell.y) };
+  const synced = mergeLoadedWorldCheckpoints(partial, [serverOwned]);
+  assert.ok(Object.values(synced.cells).filter(c => c.ownerId === 'player').length > fiveCount, 'an owned checkpoint received from a loaded zone recalculates territory immediately');
 
   const blocked = structuredClone(fresh);
   blocked.checkpoints = structuredClone(three.checkpoints.slice(0, 3));

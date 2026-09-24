@@ -6,15 +6,12 @@ import { simulateBattle } from '../game/battle';
 import { advanceTime, buildCamp, buyCampWorker, campStats, captureCheckpoint, checkpointCapacity, claimCheckpoint, minionPower, movePlayer, newGame, normalizeGame, playerLevel, recallMinion, recruitMinion, recruitPreview, setSquad, startTraining, stationMinion, summonOptions, upgradeCheckpoint, xpForNext, canBuildCamp } from '../game/engine';
 import { distanceMeters, offsetCells } from '../game/geo';
 import { gameStorage } from '../game/storage';
+import { mergeLoadedWorldCheckpoints } from '../game/worldCheckpoints';
 import type { BattleResult, Camp, Checkpoint, GameState, Minion, Position } from '../game/types';
 
 type Tab = 'MAP' | 'SQUAD' | 'MINIONS' | 'TERRITORY' | 'PROFILE';
 type BattleView = { cpId: string; result: BattleResult; visible: number; settled: boolean; xpGained: number; tokensGained: number; territoryGained: number };
 const tabs: { label: Tab; icon: string }[] = [{ label: 'MAP', icon: '◎' }, { label: 'SQUAD', icon: '✥' }, { label: 'MINIONS', icon: '✦' }, { label: 'TERRITORY', icon: '▦' }, { label: 'PROFILE', icon: '◉' }];
-
-function isPopulationCheckpoint(checkpoint: Checkpoint) {
-  return checkpoint.generationVersion !== undefined || checkpoint.zoneId !== undefined || checkpoint.id.startsWith('pop-');
-}
 
 export function App() {
   const [game, setGame] = useState<GameState>(() => normalizeGame(gameStorage.load() ?? newGame()));
@@ -43,30 +40,7 @@ export function App() {
   }, []);
 
   const move = useCallback((p: Position) => setGame(g => movePlayer(g, p, 'simulation')), []);
-  const mergeWorldCheckpoints = useCallback((incoming: Checkpoint[]) => setGame(game => {
-    const incomingIds = new Set(incoming.map(cp => cp.id));
-    const incomingById = new Map(incoming.map(cp => [cp.id, cp]));
-    const current = new Set(game.checkpoints.map(cp => cp.id));
-    let changed = false;
-    const checkpoints: Checkpoint[] = [];
-    for (const checkpoint of game.checkpoints) {
-      if (isPopulationCheckpoint(checkpoint) && checkpoint.owner !== 'player' && !incomingIds.has(checkpoint.id)) {
-        changed = true;
-        continue;
-      }
-      const fresh = incomingById.get(checkpoint.id);
-      if (fresh && checkpoint.owner === null && (checkpoint.name !== fresh.name || checkpoint.position.lat !== fresh.position.lat || checkpoint.position.lng !== fresh.position.lng)) {
-        checkpoints.push(fresh);
-        changed = true;
-      } else checkpoints.push(checkpoint);
-    }
-    for (const checkpoint of incoming) if (!current.has(checkpoint.id)) {
-      checkpoints.push(checkpoint);
-      changed = true;
-    }
-    if (!changed) return game;
-    return { ...game, checkpoints };
-  }), []);
+  const mergeWorldCheckpoints = useCallback((incoming: Checkpoint[]) => setGame(game => mergeLoadedWorldCheckpoints(game, incoming)), []);
   const step = useCallback((dx: number, dy: number) => setGame(g => movePlayer(g, offsetCells(g.position, dx * CONFIG.simulationStepCells, dy * CONFIG.simulationStepCells), 'simulation')), []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
