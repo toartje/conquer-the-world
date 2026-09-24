@@ -4,7 +4,7 @@ import { createServer } from 'vite';
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'error' });
 try {
   const { newGame, movePlayer, normalizeGame, claimCheckpoint } = await server.ssrLoadModule('/src/game/engine.ts');
-  const { rebuildTerritory, connectedCheckpointGroups } = await server.ssrLoadModule('/src/game/territory.ts');
+  const { rebuildTerritory, connectedCheckpointGroups, checkpointConnections, territoryPolygons } = await server.ssrLoadModule('/src/game/territory.ts');
   const { mergeLoadedWorldCheckpoints } = await server.ssrLoadModule('/src/game/worldCheckpoints.ts');
   const { offsetCells, cellAt, cellId } = await server.ssrLoadModule('/src/game/geo.ts');
   const { CONFIG } = await server.ssrLoadModule('/src/config.ts');
@@ -72,6 +72,9 @@ try {
   const remote = [[40, 0], [46, 0], [43, 6]].map(([x, y], index) => { const position = offsetCells(CONFIG.start, x, y), cell = cellAt(position); return { ...structuredClone(five.checkpoints[0]), id: `remote-${index}`, owner: 'player', position, cellId: cellId(cell.x, cell.y) }; });
   separated.checkpoints.push(...remote); rebuildTerritory(separated);
   assert.equal(connectedCheckpointGroups(separated.checkpoints).filter(group => group.length >= 3).length, 2, 'a remote connected trio creates a separate territory');
+  const separatedTriangles = territoryPolygons(separated.checkpoints);
+  assert.ok(separatedTriangles.length >= 2, 'two enclosed checkpoint groups create local territory polygons');
+  assert.ok(separatedTriangles.every(triangle => !triangle.some(point => point.checkpoint.id.startsWith('remote-')) || triangle.every(point => point.checkpoint.id.startsWith('remote-'))), 'no local polygon stretches between disconnected groups');
 
   const merged = structuredClone(separated);
   for (const [index, [x, y]] of [[24, 3], [36, 3]].entries()) {
@@ -80,13 +83,18 @@ try {
   }
   rebuildTerritory(merged);
   assert.equal(connectedCheckpointGroups(merged.checkpoints).filter(group => group.length >= 3).length, 1, 'capturing bridge checkpoints merges two territories into one network');
+  assert.ok(territoryPolygons(merged.checkpoints).length > separatedTriangles.length, 'bridge checkpoints add local triangles instead of one global hull');
 
   const split = structuredClone(fresh);
   split.checkpoints = Array.from({ length: 7 }, (_, index) => { const position = offsetCells(CONFIG.start, index * 12, index % 2 ? 3 : 0), cell = cellAt(position); return { ...structuredClone(fresh.checkpoints[0]), id: `chain-${index}`, owner: 'player', position, cellId: cellId(cell.x, cell.y) }; });
   assert.equal(connectedCheckpointGroups(split.checkpoints).length, 1, 'bridge checkpoint joins both sides');
+  assert.equal(checkpointConnections(split.checkpoints).length, 6, 'a chain exposes only its six valid local edges');
+  rebuildTerritory(split);
+  assert.equal(territoryPolygons(split.checkpoints).length, 0, 'a connected checkpoint chain has no enclosed local polygon');
+  assert.equal(Object.values(split.cells).filter(cell => cell.ownerId === 'player').length, 0, 'a connected checkpoint chain does not claim a giant hull');
   split.checkpoints[3].owner = null; rebuildTerritory(split);
   assert.deepEqual(connectedCheckpointGroups(split.checkpoints).map(group => group.length).sort(), [3, 3], 'losing a bridge splits the network into two valid territories');
-  assert.ok(Object.values(split.cells).some(cell => cell.ownerId === 'player'), 'split components with three checkpoints keep territory');
+  assert.equal(Object.values(split.cells).filter(cell => cell.ownerId === 'player').length, 0, 'three checkpoints in a simple chain still do not create territory');
 
   const refreshSource = structuredClone(five);
   const sentinelPosition = offsetCells(CONFIG.start, 100, 100), sentinelCell = cellAt(sentinelPosition);

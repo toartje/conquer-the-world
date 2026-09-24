@@ -8,6 +8,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { COLORS, CONFIG } from '../config';
 import { cellAt, cellCenter, cellCorners, cellId, offsetCells } from '../game/geo';
 import type { Camp, Checkpoint, GameState, Position } from '../game/types';
+import { checkpointConnections, DEBUG_CHECKPOINT_CONNECTIONS } from '../game/territory';
 import { loadPopulationCheckpoints, zoneAt, zoneRequestKey, zonesForBounds } from '../game/worldPopulation';
 import { isPopulationCheckpoint } from '../game/worldCheckpoints';
 
@@ -125,6 +126,10 @@ export function GameMap({ game, onCheckpoint, onMove, onBoss, onWorldCheckpoints
     L.marker(game.position, { icon: playerMarker(), title: 'Jouw positie', zIndexOffset: 1000 }).addTo(group);
     const visibleBounds = map.getBounds();
     if (map.getZoom() >= MIN_CHECKPOINT_ZOOM) {
+      if (DEBUG_CHECKPOINT_CONNECTIONS) for (const edge of checkpointConnections(game.checkpoints)) {
+        const lineBounds = L.latLngBounds([edge.from.position, edge.to.position]);
+        if (visibleBounds.intersects(lineBounds)) L.polyline([edge.from.position, edge.to.position], { color: '#13b8a6', weight: 2, opacity: .8, dashArray: '5 5', interactive: false, className: 'checkpoint-connection-debug' }).addTo(group);
+      }
       const visible = game.checkpoints.filter(cp => visibleBounds.contains(cp.position));
       const fixed = visible.filter(cp => !isPopulationCheckpoint(cp));
       const population = visible.filter(isPopulationCheckpoint)
